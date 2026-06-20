@@ -1,5 +1,5 @@
 cask "knotpad" do
-  version "1.0.0"
+  version "0.2.3"
   sha256 :no_check
 
   url "https://github.com/knotpad/homebrew-knotpad/releases/download/v#{version}/Knotpad_#{version}_x64.dmg"
