@@ -15,6 +15,8 @@ permissions:
 
 env:
   CARGO_INCREMENTAL: 0
+  TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+  TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
 jobs:
   build-macos:
@@ -67,6 +69,8 @@ jobs:
           tag_name: ${{ github.event.client_payload.ref || inputs.tag }}
           files: |
             apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+            apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz
+            apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz.sig
 
   build-windows:
     runs-on: windows-latest
@@ -108,6 +112,7 @@ jobs:
           tag_name: ${{ github.event.client_payload.ref || inputs.tag }}
           files: |
             apps/desktop/src-tauri/target/release/bundle/msi/*.msi
+            apps/desktop/src-tauri/target/release/bundle/msi/*.msi.sig
 
   build-linux:
     runs-on: ubuntu-latest
@@ -154,6 +159,7 @@ jobs:
           tag_name: ${{ github.event.client_payload.ref || inputs.tag }}
           files: |
             apps/desktop/src-tauri/target/release/bundle/appimage/*.AppImage
+            apps/desktop/src-tauri/target/release/bundle/appimage/*.AppImage.sig
 
   update-formula:
     needs: [build-macos, build-windows, build-linux]
@@ -223,3 +229,77 @@ jobs:
           git add Casks/knotpad.rb
           git commit -m "Update knotpad to ${{ steps.version.outputs.VERSION }}"
           git push
+
+      # New Step: Generate the updater.json file dynamically from signatures
+      - name: Generate updater.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ github.event.client_payload.ref || inputs.tag }}
+        run: |
+          node -e "
+          const fs = require('fs');
+          async function run() {
+            const token = process.env.GITHUB_TOKEN;
+            const tag = process.env.TAG_NAME;
+            const version = tag.replace(/^v/, '');
+            const repo = 'knotpad/knotpad-release';
+            
+            const res = await fetch('https://api.github.com/repos/' + repo + '/releases/tags/' + tag, {
+              headers: { Authorization: 'token ' + token }
+            });
+            if (!res.ok) throw new Error('Failed to fetch release: ' + res.statusText);
+            const release = await res.json();
+            const assets = release.assets;
+
+            const platforms = {};
+
+            for (const asset of assets) {
+              const name = asset.name;
+              const url = asset.browser_download_url;
+
+              if (name.endsWith('.sig')) {
+                const targetName = name.replace('.sig', '');
+                const targetAsset = assets.find(a => a.name === targetName);
+                if (!targetAsset) continue;
+
+                const sigRes = await fetch(url);
+                const signature = (await sigRes.text()).trim();
+
+                let platformKey = '';
+                if (targetName.includes('aarch64') && targetName.endsWith('.app.tar.gz')) {
+                  platformKey = 'darwin-aarch64';
+                } else if (targetName.includes('x64') && targetName.endsWith('.app.tar.gz')) {
+                  platformKey = 'darwin-x86_64';
+                } else if (targetName.includes('amd64') && targetName.endsWith('.AppImage')) {
+                  platformKey = 'linux-x86_64';
+                } else if (targetName.includes('x64') && targetName.endsWith('.msi')) {
+                  platformKey = 'windows-x86_64';
+                }
+
+                if (platformKey) {
+                  platforms[platformKey] = {
+                    signature,
+                    url: targetAsset.browser_download_url
+                  };
+                }
+              }
+            }
+
+            const updaterJson = {
+              version: tag,
+              notes: 'Knotpad version ' + version + ' release.',
+              pub_date: new Date().toISOString(),
+              platforms
+            };
+
+            fs.writeFileSync('updater.json', JSON.stringify(updaterJson, null, 2));
+            console.log('Generated updater.json:', updaterJson);
+          }
+          run().catch(err => { console.error(err); process.exit(1); });
+          "
+
+      - name: Upload updater.json to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.client_payload.ref || inputs.tag }}
+          files: updater.json
