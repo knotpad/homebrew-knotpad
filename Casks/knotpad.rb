@@ -17,6 +17,10 @@ cask "knotpad" do
 
   app "Knotpad.app"
 
+    postflight do
+    system_command "xattr", args: ["-cr", "#{appdir}/Knotpad.app"]
+  end
+  
   zap trash: [
     "~/Library/Application Support/knotpad",
     "~/Library/Preferences/app.knotpad.plist",
